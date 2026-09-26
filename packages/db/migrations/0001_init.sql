@@ -233,3 +233,32 @@ CREATE TABLE notifications (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX notifications_user_idx ON notifications(user_id, read_at, created_at DESC);
+
+-- migrate:down
+DROP TABLE notifications;
+DROP TABLE audit_logs;
+DROP TABLE outbox_events;
+DROP TABLE moderation_actions;
+DROP TABLE reports;
+DROP TABLE feature_confirmations;
+DROP TABLE comments;
+DROP TABLE revision_media;
+DROP TABLE media_assets;
+ALTER TABLE map_features DROP CONSTRAINT map_features_current_revision_fk;
+DROP TABLE feature_revisions;
+DROP TABLE map_features;
+DROP TABLE categories;
+DROP TABLE auth_tokens;
+DROP TABLE sessions;
+DROP TABLE users;
+
+DROP TYPE report_status;
+DROP TYPE report_target_type;
+DROP TYPE auth_token_type;
+DROP TYPE media_status;
+DROP TYPE comment_status;
+DROP TYPE content_status;
+DROP TYPE user_status;
+DROP TYPE user_role;
+DROP TYPE confirmation_result;
+

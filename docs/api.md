@@ -17,8 +17,8 @@
 | `GET` | `/features/:id` | 已发布详情；作者和审核员可查看私有状态 |
 | `GET` | `/features/:id/comments` | 已发布评论 |
 | `GET` | `/features/:id/confirmations` | 时效确认汇总 |
-| `GET` | `/health/live` | 进程存活 |
-| `GET` | `/health/ready` | 数据库就绪 |
+| `GET` | `/health/live` | 进程存活（不检查依赖） |
+| `GET` | `/health/ready` | 依赖就绪：数据库连通性、迁移版本、Redis；失败返回 503 并逐项列出 `checks` |
 
 ## 账号接口
 

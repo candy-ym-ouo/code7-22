@@ -1,15 +1,18 @@
-import dotenv from "dotenv";
-import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
-
-dotenv.config({ path: process.env.ENV_FILE || join(dirname(fileURLToPath(import.meta.url)), "../../../.env") });
 import { z } from "zod";
+import { assertSecrets, booleanFromEnv, loadEnvFile, parseEnv } from "@map/shared/config";
 
-const envSchema = z.object({
+loadEnvFile();
+
+export const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
+  PORT: z.coerce.number().int().positive().default(3000),
+  LOG_LEVEL: z
+    .union([z.enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"]), z.literal("")])
+    .optional()
+    .transform((value) => (value ? value : undefined)),
   APP_ORIGIN: z.string().url().default("http://localhost:5173"),
   PUBLIC_API_URL: z.string().url().default("http://localhost:3000/api/v1"),
-  COOKIE_SECURE: z.string().default("false").transform((value) => value === "true"),
+  COOKIE_SECURE: booleanFromEnv("false"),
   DATABASE_URL: z.string().min(1),
   REDIS_URL: z.string().min(1).default("redis://localhost:6379/0"),
   S3_ENDPOINT: z.string().url(),
@@ -27,5 +30,21 @@ const envSchema = z.object({
   MEDIA_MAX_PER_FEATURE: z.coerce.number().int().positive().default(6)
 });
 
-export const config = envSchema.parse(process.env);
+export const config = parseEnv(envSchema);
+
+assertSecrets(
+  config as unknown as Record<string, unknown>,
+  [{ key: "JWT_ACCESS_SECRET", minLength: 32 }],
+  config.NODE_ENV
+);
+
+if (config.NODE_ENV === "production") {
+  if (!config.COOKIE_SECURE) {
+    throw new Error("配置校验失败：生产环境必须设置 COOKIE_SECURE=true");
+  }
+  if (config.APP_ORIGIN.startsWith("http://") || config.PUBLIC_API_URL.startsWith("http://")) {
+    throw new Error("配置校验失败：生产环境 APP_ORIGIN 与 PUBLIC_API_URL 必须使用 https");
+  }
+}
+
 export type AppConfig = typeof config;

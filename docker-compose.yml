@@ -1,0 +1,229 @@
+# 公共空间细节地图 — 一体化交付链
+#
+#   docker compose up -d --build     启动完整环境（含迁移与健康探针）
+#   docker compose ps                查看各服务健康状态
+#   docker compose run --rm migrate status   查看迁移状态
+#   docker compose run --rm migrate down 1   回滚最近 1 个迁移
+#
+# 变量来自同一份 .env（compose 自动读取用于插值），与本地 pnpm dev、
+# 生产部署使用完全相同的配置校验、迁移器与启动检查。
+# 生产部署：NODE_ENV=production 并更换全部密钥（启动校验会拒绝占位密钥）。
+
+x-app-env: &app-env
+  NODE_ENV: ${NODE_ENV:-development}
+  LOG_LEVEL: ${LOG_LEVEL:-}
+  DATABASE_URL: postgres://${POSTGRES_USER:-map}:${POSTGRES_PASSWORD:-map}@postgres:5432/${POSTGRES_DB:-map}
+  REDIS_URL: redis://redis:6379/0
+  S3_ENDPOINT: http://minio:9000
+  S3_PUBLIC_ENDPOINT: ${S3_PUBLIC_ENDPOINT:-http://localhost:9000}
+  S3_REGION: ${S3_REGION:-us-east-1}
+  S3_ACCESS_KEY: ${S3_ACCESS_KEY:-minioadmin}
+  S3_SECRET_KEY: ${S3_SECRET_KEY:-minioadmin}
+  S3_QUARANTINE_BUCKET: ${S3_QUARANTINE_BUCKET:-map-quarantine}
+  S3_PUBLIC_BUCKET: ${S3_PUBLIC_BUCKET:-map-public}
+  PUBLIC_MEDIA_BASE_URL: ${PUBLIC_MEDIA_BASE_URL:-http://localhost:9000/map-public}
+  SMTP_HOST: mailpit
+  SMTP_PORT: ${SMTP_PORT:-1025}
+  SMTP_SECURE: ${SMTP_SECURE:-false}
+  SMTP_USER: ${SMTP_USER:-}
+  SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+  MAIL_FROM: ${MAIL_FROM:-公共空间细节地图 <noreply@example.test>}
+  CLAMAV_ENABLED: ${CLAMAV_ENABLED:-true}
+  CLAMAV_HOST: clamav
+  CLAMAV_PORT: ${CLAMAV_PORT:-3310}
+
+services:
+  postgres:
+    image: postgis/postgis:16-3.4
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-map}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-map}
+      POSTGRES_DB: ${POSTGRES_DB:-map}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    ports:
+      - "5432:5432"
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    ports:
+      - "6379:6379"
+
+  minio:
+    image: minio/minio:latest # 生产请锁定具体 RELEASE 版本
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+
+  minio-init:
+    image: minio/mc:latest # 与 minio 镜像版本保持一致
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      MINIO_QUARANTINE_BUCKET: ${S3_QUARANTINE_BUCKET:-map-quarantine}
+      MINIO_PUBLIC_BUCKET: ${S3_PUBLIC_BUCKET:-map-public}
+    volumes:
+      - ./infra/minio:/init:ro
+    entrypoint: ["/bin/sh", "/init/create-buckets.sh"]
+
+  mailpit:
+    image: axllent/mailpit:latest # 生产请替换为受控 SMTP 并锁定版本
+    ports:
+      - "8025:8025"
+      - "1025:1025"
+
+  clamav:
+    image: clamav/clamav:1.4
+    # 首次启动需下载病毒库，可能耗时数分钟
+    healthcheck:
+      test: ["CMD", "/clamdcheck.sh"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 180s
+    ports:
+      - "3310:3310"
+
+  migrate:
+    build:
+      context: .
+      dockerfile: infra/docker/server.Dockerfile
+      target: migrate
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      DATABASE_URL: postgres://${POSTGRES_USER:-map}:${POSTGRES_PASSWORD:-map}@postgres:5432/${POSTGRES_DB:-map}
+
+  api:
+    build:
+      context: .
+      dockerfile: infra/docker/server.Dockerfile
+      target: api
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      <<: *app-env
+      PORT: ${PORT:-3000}
+      APP_ORIGIN: ${APP_ORIGIN:-http://localhost:8080}
+      PUBLIC_API_URL: ${PUBLIC_API_URL:-http://localhost:8080/api/v1}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:-replace-with-a-long-random-secret}
+      ACCESS_TOKEN_TTL: ${ACCESS_TOKEN_TTL:-10m}
+      REFRESH_TOKEN_TTL_DAYS: ${REFRESH_TOKEN_TTL_DAYS:-30}
+      MEDIA_MAX_BYTES: ${MEDIA_MAX_BYTES:-10485760}
+      MEDIA_MAX_PER_FEATURE: ${MEDIA_MAX_PER_FEATURE:-6}
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    ports:
+      - "3000:3000"
+
+  worker:
+    build:
+      context: .
+      dockerfile: infra/docker/server.Dockerfile
+      target: worker
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+      migrate:
+        condition: service_completed_successfully
+      clamav:
+        condition: service_healthy
+    environment:
+      <<: *app-env
+      WORKER_HEALTH_PORT: ${WORKER_HEALTH_PORT:-3100}
+      MEDIA_MAX_PIXELS: ${MEDIA_MAX_PIXELS:-20000000}
+      PRIVACY_DETECTOR_URL: ${PRIVACY_DETECTOR_URL:-}
+      PRIVACY_BLUR_SIGMA: ${PRIVACY_BLUR_SIGMA:-32}
+      PRIVACY_BLUR_PADDING: ${PRIVACY_BLUR_PADDING:-0.08}
+      ORIGINAL_RETENTION_HOURS: ${ORIGINAL_RETENTION_HOURS:-24}
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:'+(process.env.WORKER_HEALTH_PORT||3100)+'/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    ports:
+      - "3100:3100"
+
+  web:
+    build:
+      context: .
+      dockerfile: infra/docker/web.Dockerfile
+      args:
+        VITE_TILE_URL: ${VITE_TILE_URL:-}
+        VITE_MAP_STYLE_URL: ${VITE_MAP_STYLE_URL:-}
+        VITE_MAP_GLYPHS_URL: ${VITE_MAP_GLYPHS_URL:-}
+        VITE_DEFAULT_MAP_CENTER: ${VITE_DEFAULT_MAP_CENTER:-116.39,39.90}
+        VITE_DEFAULT_MAP_ZOOM: ${VITE_DEFAULT_MAP_ZOOM:-12}
+    depends_on:
+      api:
+        condition: service_healthy
+
+  caddy:
+    image: caddy:2-alpine
+    depends_on:
+      api:
+        condition: service_healthy
+      web:
+        condition: service_started
+    environment:
+      DOMAIN: ${DOMAIN:-localhost}
+      STORAGE_DOMAIN: ${STORAGE_DOMAIN:-storage.localhost}
+    volumes:
+      - ./infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+    ports:
+      - "8080:80"
+      - "8443:443"
+
+volumes:
+  postgres-data:
+  redis-data:
+  minio-data:
+  caddy-data:

@@ -2,7 +2,13 @@ packages:
   - apps/*
   - packages/*
 
+# pnpm 11+ 写法
 allowBuilds:
   esbuild: true
   msgpackr-extract: false
   sharp: true
+
+# pnpm 10 写法（镜像构建时需要 sharp/esbuild 的安装脚本）
+onlyBuiltDependencies:
+  - esbuild
+  - sharp

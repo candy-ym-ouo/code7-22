@@ -4,8 +4,11 @@ import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
 import { ZodError } from "zod";
 import { config } from "./config";
+import { fastifyLoggerOptions } from "@map/shared/logger";
+import { assertDatabaseVersion } from "@map/db/version";
 import { AppError } from "./errors";
-import { query } from "./db";
+import { pool, query } from "./db";
+import { pingRedis } from "./queue";
 import { authRoutes } from "./routes/auth";
 import { featureRoutes } from "./routes/features";
 import { mediaRoutes } from "./routes/media";
@@ -13,12 +16,11 @@ import { commentRoutes } from "./routes/comments";
 import { reportRoutes } from "./routes/reports";
 import { moderationRoutes } from "./routes/moderation";
 
+type CheckStatus = "ok" | "fail" | "skipped";
+
 export async function buildApp() {
   const app = Fastify({
-    logger: {
-      level: config.NODE_ENV === "production" ? "info" : "debug",
-      redact: ["req.headers.authorization", "req.headers.cookie", "res.headers.set-cookie"]
-    },
+    logger: fastifyLoggerOptions("api", { nodeEnv: config.NODE_ENV, level: config.LOG_LEVEL }),
     trustProxy: true,
     bodyLimit: 1024 * 1024
   });
@@ -42,14 +44,39 @@ export async function buildApp() {
     reply.header("Permissions-Policy", "geolocation=(self)");
   });
 
-  app.get("/health/live", async () => ({ status: "ok" }));
+  // 存活探针：进程还在响应即可，不检查依赖（依赖抖动不应触发重启）。
+  app.get("/health/live", async () => ({ status: "ok", service: "api" }));
+
+  // 就绪探针：数据库连通性、迁移版本与 Redis 全部通过才接收流量。
   app.get("/health/ready", async (_request, reply) => {
+    const checks: Record<string, CheckStatus> = { database: "ok", migrations: "ok", redis: "ok" };
+    let failure: unknown;
+
     try {
       await query("SELECT 1");
-      return { status: "ready" };
-    } catch {
-      return reply.code(503).send({ status: "not_ready" });
+    } catch (error) {
+      failure = error;
+      checks.database = "fail";
+      checks.migrations = "skipped";
     }
+
+    if (checks.database === "ok") {
+      try {
+        await assertDatabaseVersion(pool);
+      } catch (error) {
+        failure = error;
+        checks.migrations = "fail";
+      }
+    }
+
+    if (!await pingRedis()) checks.redis = "fail";
+
+    const ready = Object.values(checks).every((value) => value === "ok");
+    if (!ready) {
+      app.log.error({ checks, err: failure }, "readiness check failed");
+      return reply.code(503).send({ status: "not_ready", checks });
+    }
+    return { status: "ready", checks };
   });
 
   await app.register(async (api) => {

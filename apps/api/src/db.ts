@@ -1,6 +1,9 @@
 import pg from "pg";
 import type { PoolClient, QueryResultRow } from "pg";
 import { config } from "./config";
+import { createLogger, logLevel } from "@map/shared/logger";
+
+const logger = createLogger("api", { level: logLevel(config.NODE_ENV, config.LOG_LEVEL) });
 
 const { Pool } = pg;
 
@@ -11,7 +14,7 @@ export const pool = new Pool({
 });
 
 pool.on("error", (error) => {
-  console.error({ error }, "unexpected PostgreSQL pool error");
+  logger.error({ err: error }, "unexpected PostgreSQL pool error");
 });
 
 export async function query<T extends QueryResultRow = QueryResultRow>(text: string, values: unknown[] = []) {

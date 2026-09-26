@@ -1,8 +1,7 @@
-import dotenv from "dotenv";
-import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
+import { loadEnvFile } from "@map/shared/env";
 
-dotenv.config({ path: process.env.ENV_FILE || join(dirname(fileURLToPath(import.meta.url)), "../../../.env") });
+loadEnvFile();
+
 import pg from "pg";
 import { categoryDefinitions } from "@map/shared/contracts";
 

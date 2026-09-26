@@ -1,15 +1,30 @@
 import { Queue } from "bullmq";
 import IORedis from "ioredis";
 import { config } from "./config";
+import { createLogger, logLevel } from "@map/shared/logger";
+
+const logger = createLogger("api", { level: logLevel(config.NODE_ENV, config.LOG_LEVEL) });
 
 const redisOptions = { maxRetriesPerRequest: null } as const;
 export const mediaRedis = new IORedis(config.REDIS_URL, redisOptions);
 export const outboxRedis = new IORedis(config.REDIS_URL, redisOptions);
-mediaRedis.on("error", (error) => console.error({ error }, "media Redis connection error"));
-outboxRedis.on("error", (error) => console.error({ error }, "outbox Redis connection error"));
+mediaRedis.on("error", (error) => logger.error({ err: error }, "media Redis connection error"));
+outboxRedis.on("error", (error) => logger.error({ err: error }, "outbox Redis connection error"));
 
 export const mediaQueue = new Queue("media", { connection: mediaRedis });
 export const outboxQueue = new Queue("outbox", { connection: outboxRedis });
+
+/** 就绪检查使用：任一队列连接可 ping 通即视为 Redis 可用。 */
+export async function pingRedis(timeoutMs = 2_000): Promise<boolean> {
+  try {
+    return await Promise.race([
+      mediaRedis.ping().then((reply) => reply === "PONG"),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), timeoutMs).unref())
+    ]);
+  } catch {
+    return false;
+  }
+}
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
   return Promise.race([
@@ -39,7 +54,7 @@ export async function enqueueOutbox(eventId: string): Promise<void> {
     );
   } catch (error) {
     // The database outbox remains the source of truth. A worker maintenance tick retries pending rows.
-    console.error({ eventId, error }, "failed to enqueue outbox event");
+    logger.error({ eventId, err: error }, "failed to enqueue outbox event");
   }
 }
 

@@ -2,6 +2,9 @@ import { config } from "./config";
 import { pool } from "./db";
 import { deleteObject } from "./storage";
 import { randomToken } from "@map/shared/server";
+import { createLogger, logLevel } from "@map/shared/logger";
+
+const logger = createLogger("worker", { level: logLevel(config.NODE_ENV, config.LOG_LEVEL) });
 
 type DeletableAccount = { id: string };
 
@@ -39,7 +42,7 @@ export async function purgeDeletedAccounts(): Promise<void> {
         await Promise.all(removals);
       }
     } catch (error) {
-      console.error({ userId: account.id, error }, "account purge object deletion failed; will retry");
+      logger.error({ userId: account.id, err: error }, "account purge object deletion failed; will retry");
       continue;
     }
 

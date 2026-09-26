@@ -18,13 +18,15 @@ apps/
   web/       Vue 3 前端
   worker/    媒体隐私处理、邮件 outbox、定时维护
 packages/
-  shared/    共享 Zod 合约、分类定义、密码与令牌工具
-  db/        数据库迁移、分类种子、管理员创建 CLI
+  shared/    共享 Zod 合约、分类定义、密码与令牌工具、统一环境加载/校验与日志
+  db/        数据库迁移（up/down、校验和、版本检查）、分类种子、管理员创建 CLI
 infra/
   caddy/     生产反向代理
+  docker/    api / worker / migrate / web 镜像定义
   minio/     私有桶、公开桶和浏览器 CORS
   nginx/     Web 静态资源
   postgres/  PostGIS 初始化
+docker-compose.yml   一键完整环境（含迁移任务与健康探针）
 docs/        项目、API、隐私和运维文档
 ```
 
@@ -41,11 +43,20 @@ pnpm admin:create
 pnpm dev
 ```
 
+也可以用 Docker 一次性启动完整环境（数据库、Redis、MinIO、Mailpit、ClamAV、迁移、API、Worker、Web、Caddy）：
+
+```bash
+cp .env.example .env
+docker compose up -d --build
+docker compose ps   # 等待所有服务 healthy
+```
+
 访问地址：
 
-- Web：<http://localhost:5173>
+- Web：<http://localhost:5173>（Docker 环境：<http://localhost:8080>）
 - API：<http://localhost:3000>
 - API 就绪检查：<http://localhost:3000/health/ready>
+- Worker 就绪检查：<http://localhost:3100/health/ready>
 - MinIO Console：<http://localhost:9001>
 - Mailpit：<http://localhost:8025>
 
@@ -74,6 +85,18 @@ pnpm build
 ```
 
 `pnpm verify` 串联类型检查、测试和生产构建。
+
+数据库迁移与回滚：
+
+```bash
+pnpm db:migrate          # 应用所有待执行迁移（事务 + 校验和 +  advisory 锁）
+pnpm db:migrate:status   # 查看每个迁移的应用/回滚能力状态
+pnpm db:migrate:verify   # 校验数据库版本与代码一致（CI 可用）
+pnpm db:rollback         # 回滚最近 1 个迁移；pnpm --filter @map/db rollback 3 回滚 3 个
+```
+
+每个迁移文件都可以带 `-- migrate:down` 回滚段；没有回滚段的迁移不可回滚，
+测试会强制新迁移必须提供回滚段。
 
 手工闭环验证建议：
 

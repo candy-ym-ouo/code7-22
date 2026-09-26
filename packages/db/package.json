@@ -2,8 +2,15 @@
   "name": "@map/db",
   "private": true,
   "type": "module",
+  "exports": {
+    "./migrations": "./src/migrations.ts",
+    "./version": "./src/version.ts"
+  },
   "scripts": {
-    "migrate": "tsx src/migrate.ts",
+    "migrate": "tsx src/migrate.ts up",
+    "migrate:status": "tsx src/migrate.ts status",
+    "migrate:verify": "tsx src/migrate.ts verify",
+    "rollback": "tsx src/migrate.ts down",
     "seed": "tsx src/seed.ts",
     "admin:create": "tsx src/admin.ts",
     "typecheck": "tsc --noEmit",
@@ -11,13 +18,12 @@
   },
   "dependencies": {
     "@map/shared": "workspace:*",
-    "dotenv": "^17.2.2",
-    "pg": "^8.16.3"
+    "pg": "^8.16.3",
+    "tsx": "^4.20.5"
   },
   "devDependencies": {
     "@types/node": "^24.3.0",
     "@types/pg": "^8.15.5",
-    "tsx": "^4.20.5",
     "typescript": "^5.9.2",
     "vitest": "^3.2.4"
   }

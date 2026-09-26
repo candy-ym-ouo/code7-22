@@ -14,6 +14,9 @@
     "test": "pnpm -r test",
     "verify": "pnpm lint && pnpm test && pnpm build",
     "db:migrate": "pnpm --filter @map/db migrate",
+    "db:migrate:status": "pnpm --filter @map/db migrate:status",
+    "db:migrate:verify": "pnpm --filter @map/db migrate:verify",
+    "db:rollback": "pnpm --filter @map/db rollback",
     "db:seed": "pnpm --filter @map/db seed",
     "admin:create": "pnpm --filter @map/db admin:create"
   },

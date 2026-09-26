@@ -4,6 +4,9 @@ import { pool } from "./db";
 import { deleteObject, objectExists, readQuarantineObject, writeQuarantineObject, copyToPublic } from "./storage";
 import { scanForMalware } from "./clamav";
 import { processPrivacyImage } from "./privacy";
+import { createLogger, logLevel } from "@map/shared/logger";
+
+const logger = createLogger("worker", { level: logLevel(config.NODE_ENV, config.LOG_LEVEL) });
 
 export async function processMediaJob(mediaId: string): Promise<void> {
   const result = await pool.query<{
@@ -19,7 +22,7 @@ export async function processMediaJob(mediaId: string): Promise<void> {
   const media = result.rows[0];
   if (!media) throw new Error("Media record not found");
   if (!["processing", "failed"].includes(media.privacy_status)) {
-    console.log(`skip media ${mediaId}: status=${media.privacy_status}`);
+    logger.info({ mediaId, status: media.privacy_status }, "skip media: not in a processable state");
     return;
   }
 
@@ -92,7 +95,7 @@ export async function processMediaJob(mediaId: string): Promise<void> {
       ]
     );
 
-    console.log(`media ${mediaId} processed as ${autoPublish ? "ready" : "manual_review"}`);
+    logger.info({ mediaId, result: autoPublish ? "ready" : "manual_review" }, "media processed");
   } catch (error) {
     const message = error instanceof Error ? error.message.slice(0, 500) : "Unknown media processing error";
     await pool.query(
@@ -132,7 +135,7 @@ export async function cleanupOriginalMedia(): Promise<void> {
         [row.id]
       );
     } catch (error) {
-      console.error({ mediaId: row.id, error }, "failed to clean abandoned upload");
+      logger.error({ mediaId: row.id, err: error }, "failed to clean abandoned upload");
     }
   }
 
@@ -150,7 +153,7 @@ export async function cleanupOriginalMedia(): Promise<void> {
       }
       await pool.query("UPDATE media_assets SET delete_after = NULL, updated_at = now() WHERE id = $1", [row.id]);
     } catch (error) {
-      console.error({ mediaId: row.id, error }, "failed to clean original media");
+      logger.error({ mediaId: row.id, err: error }, "failed to clean original media");
     }
   }
 }
@@ -221,7 +224,7 @@ export async function cleanupDeletedMediaObjects(): Promise<void> {
         [item.id, `deleted/${item.id}.object`]
       );
     } catch (error) {
-      console.error({ mediaId: item.id, error }, "failed to clean deleted media objects");
+      logger.error({ mediaId: item.id, err: error }, "failed to clean deleted media objects");
     }
   }
 }

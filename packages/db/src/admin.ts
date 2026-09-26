@@ -1,8 +1,7 @@
-import dotenv from "dotenv";
-import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
+import { loadEnvFile } from "@map/shared/env";
 
-dotenv.config({ path: process.env.ENV_FILE || join(dirname(fileURLToPath(import.meta.url)), "../../../.env") });
+loadEnvFile();
+
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import pg from "pg";
