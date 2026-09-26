@@ -18,13 +18,15 @@ apps/
   web/       Vue 3 前端
   worker/    媒体隐私处理、邮件 outbox、定时维护
 packages/
-  shared/    共享 Zod 合约、分类定义、密码与令牌工具
-  db/        数据库迁移、分类种子、管理员创建 CLI
+  shared/    共享 Zod 合约、分类定义、密码与令牌工具、统一配置校验/日志/健康探针
+  db/        数据库迁移（含 down 回滚）、版本守卫、分类种子、管理员创建 CLI
 infra/
   caddy/     生产反向代理
+  docker/    API/Worker 与 Web 镜像构建
   minio/     私有桶、公开桶和浏览器 CORS
   nginx/     Web 静态资源
   postgres/  PostGIS 初始化
+docker-compose.yml  本地/参考环境一键编排（含 migrate 一次性任务与健康检查）
 docs/        项目、API、隐私和运维文档
 ```
 
@@ -46,8 +48,11 @@ pnpm dev
 - Web：<http://localhost:5173>
 - API：<http://localhost:3000>
 - API 就绪检查：<http://localhost:3000/health/ready>
+- Worker 就绪检查：<http://localhost:3100/health/ready>
 - MinIO Console：<http://localhost:9001>
 - Mailpit：<http://localhost:8025>
+
+数据库版本命令：`pnpm db:migrate`（应用）、`pnpm db:status`（校验代码与库版本一致，不一致退出码 2）、`pnpm db:rollback [--steps=N]`（事务化回滚）。API/Worker 启动时会自动校验密钥、数据库版本和 Redis/S3 依赖，校验不过则快速退出、不接收流量或任务。
 
 ClamAV 首次启动需要下载病毒库，可能耗时数分钟。只做非媒体开发时可在 `.env` 中设置 `CLAMAV_ENABLED=false`，媒体仍会经过服务端隐私模糊，但不会执行病毒扫描，不得用于生产。
 

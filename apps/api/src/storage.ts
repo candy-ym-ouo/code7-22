@@ -14,23 +14,37 @@ const credentials = {
   secretAccessKey: config.S3_SECRET_KEY
 };
 
-export const internalS3 = new S3Client({
-  endpoint: config.S3_ENDPOINT,
-  region: config.S3_REGION,
-  forcePathStyle: true,
-  credentials
-});
+let internalClient: S3Client | undefined;
+let publicClient: S3Client | undefined;
 
-export const publicS3 = new S3Client({
-  endpoint: config.S3_PUBLIC_ENDPOINT,
-  region: config.S3_REGION,
-  forcePathStyle: true,
-  credentials
-});
+/** Lazily create S3 clients the first time a request needs them. */
+export function getInternalS3(): S3Client {
+  if (!internalClient) {
+    internalClient = new S3Client({
+      endpoint: config.S3_ENDPOINT,
+      region: config.S3_REGION,
+      forcePathStyle: true,
+      credentials
+    });
+  }
+  return internalClient;
+}
+
+export function getPublicS3(): S3Client {
+  if (!publicClient) {
+    publicClient = new S3Client({
+      endpoint: config.S3_PUBLIC_ENDPOINT,
+      region: config.S3_REGION,
+      forcePathStyle: true,
+      credentials
+    });
+  }
+  return publicClient;
+}
 
 export async function createPreviewUrl(key: string, expiresIn = 600): Promise<string> {
   return getSignedUrl(
-    publicS3,
+    getPublicS3(),
     new GetObjectCommand({
       Bucket: config.S3_QUARANTINE_BUCKET,
       Key: key
@@ -41,7 +55,7 @@ export async function createPreviewUrl(key: string, expiresIn = 600): Promise<st
 
 export async function createUploadUrl(key: string, contentType: string): Promise<string> {
   return getSignedUrl(
-    publicS3,
+    getPublicS3(),
     new PutObjectCommand({
       Bucket: config.S3_QUARANTINE_BUCKET,
       Key: key,
@@ -52,14 +66,14 @@ export async function createUploadUrl(key: string, contentType: string): Promise
 }
 
 export async function getQuarantineMetadata(key: string) {
-  return internalS3.send(new HeadObjectCommand({
+  return getInternalS3().send(new HeadObjectCommand({
     Bucket: config.S3_QUARANTINE_BUCKET,
     Key: key
   }));
 }
 
 export async function readQuarantineObject(key: string): Promise<Buffer> {
-  const response = await internalS3.send(new GetObjectCommand({
+  const response = await getInternalS3().send(new GetObjectCommand({
     Bucket: config.S3_QUARANTINE_BUCKET,
     Key: key
   }));
@@ -68,7 +82,7 @@ export async function readQuarantineObject(key: string): Promise<Buffer> {
 }
 
 export async function publishMediaObject(processedKey: string, publicKey: string): Promise<void> {
-  await internalS3.send(new CopyObjectCommand({
+  await getInternalS3().send(new CopyObjectCommand({
     Bucket: config.S3_PUBLIC_BUCKET,
     Key: publicKey,
     CopySource: `${config.S3_QUARANTINE_BUCKET}/${processedKey}`,
@@ -79,7 +93,7 @@ export async function publishMediaObject(processedKey: string, publicKey: string
 }
 
 export async function deleteObject(bucket: string, key: string): Promise<void> {
-  await internalS3.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
+  await getInternalS3().send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
 }
 
 export function publicMediaUrl(key: string | null | undefined): string | null {

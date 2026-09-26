@@ -1,12 +1,15 @@
+import { createLogger } from "@map/shared/logging";
 import { config } from "./config";
-import { pool } from "./db";
+import { getPool } from "./db";
 import { deleteObject } from "./storage";
 import { randomToken } from "@map/shared/server";
+
+const logger = createLogger({ app: "worker" });
 
 type DeletableAccount = { id: string };
 
 export async function purgeDeletedAccounts(): Promise<void> {
-  const accounts = await pool.query<DeletableAccount>(
+  const accounts = await getPool().query<DeletableAccount>(
     `SELECT id FROM users
      WHERE status = 'deletion_pending'
        AND deleted_at < now() - interval '30 days'
@@ -14,7 +17,7 @@ export async function purgeDeletedAccounts(): Promise<void> {
   );
 
   for (const account of accounts.rows) {
-    const media = await pool.query<{
+    const media = await getPool().query<{
       quarantine_object_key: string;
       processed_object_key: string | null;
       thumbnail_object_key: string | null;
@@ -39,11 +42,11 @@ export async function purgeDeletedAccounts(): Promise<void> {
         await Promise.all(removals);
       }
     } catch (error) {
-      console.error({ userId: account.id, error }, "account purge object deletion failed; will retry");
+      logger.error({ userId: account.id, err: error }, "account purge object deletion failed; will retry");
       continue;
     }
 
-    const client = await pool.connect();
+    const client = await getPool().connect();
     try {
       await client.query("BEGIN");
       await client.query(

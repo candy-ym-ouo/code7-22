@@ -1,52 +1,30 @@
-import dotenv from "dotenv";
-import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
+import "@map/shared/bootstrap";
+import { Client } from "pg";
+import { createLogger } from "@map/shared";
+import { dbConfig } from "./config";
+import { migrate, verifyMigrations } from "./runner";
 
-dotenv.config({ path: process.env.ENV_FILE || join(dirname(fileURLToPath(import.meta.url)), "../../../.env") });
-import { readdir, readFile } from "node:fs/promises";
-import pg from "pg";
-
-const { Client } = pg;
+const logger = createLogger({ app: "db" });
 
 async function main() {
-  const databaseUrl = process.env.DATABASE_URL;
-  if (!databaseUrl) throw new Error("DATABASE_URL is required");
-
-  const client = new Client({ connectionString: databaseUrl });
+  const client = new Client({ connectionString: dbConfig.DATABASE_URL });
   await client.connect();
   try {
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS schema_migrations (
-        filename text PRIMARY KEY,
-        applied_at timestamptz NOT NULL DEFAULT now()
-      )
-    `);
-
-    const directory = join(dirname(fileURLToPath(import.meta.url)), "../migrations");
-    const files = (await readdir(directory)).filter((file) => file.endsWith(".sql")).sort();
-
-    for (const filename of files) {
-      const existing = await client.query("SELECT 1 FROM schema_migrations WHERE filename = $1", [filename]);
-      if (existing.rowCount) continue;
-
-      const sql = await readFile(join(directory, filename), "utf8");
-      await client.query("BEGIN");
-      try {
-        await client.query(sql);
-        await client.query("INSERT INTO schema_migrations(filename) VALUES ($1)", [filename]);
-        await client.query("COMMIT");
-        console.log(`applied ${filename}`);
-      } catch (error) {
-        await client.query("ROLLBACK");
-        throw error;
-      }
+    const applied = await migrate(client, {
+      allowDrift: dbConfig.MIGRATE_ALLOW_DRIFT,
+      onApply: (filename) => logger.info({ migration: filename }, "migration applied")
+    });
+    if (applied.length === 0) {
+      logger.info("database already at latest version");
     }
+    const verification = await verifyMigrations(client);
+    logger.info({ pending: verification.pending.length, drifted: verification.drifted.length }, "migration complete");
   } finally {
     await client.end();
   }
 }
 
 main().catch((error) => {
-  console.error(error);
+  logger.error({ err: error }, "migration failed");
   process.exitCode = 1;
 });

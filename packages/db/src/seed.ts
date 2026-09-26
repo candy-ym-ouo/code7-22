@@ -1,18 +1,13 @@
-import dotenv from "dotenv";
-import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
-
-dotenv.config({ path: process.env.ENV_FILE || join(dirname(fileURLToPath(import.meta.url)), "../../../.env") });
-import pg from "pg";
+import "@map/shared/bootstrap";
+import { Client } from "pg";
+import { createLogger } from "@map/shared";
 import { categoryDefinitions } from "@map/shared/contracts";
+import { dbConfig } from "./config";
 
-const { Client } = pg;
+const logger = createLogger({ app: "db" });
 
 async function main() {
-  const databaseUrl = process.env.DATABASE_URL;
-  if (!databaseUrl) throw new Error("DATABASE_URL is required");
-
-  const client = new Client({ connectionString: databaseUrl });
+  const client = new Client({ connectionString: dbConfig.DATABASE_URL });
   await client.connect();
   try {
     await client.query("BEGIN");
@@ -31,7 +26,7 @@ async function main() {
       );
     }
     await client.query("COMMIT");
-    console.log(`seeded ${categoryDefinitions.length} categories`);
+    logger.info({ categories: categoryDefinitions.length }, "seed complete");
   } catch (error) {
     await client.query("ROLLBACK");
     throw error;
@@ -41,6 +36,6 @@ async function main() {
 }
 
 main().catch((error) => {
-  console.error(error);
+  logger.error({ err: error }, "seed failed");
   process.exitCode = 1;
 });

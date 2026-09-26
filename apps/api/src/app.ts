@@ -1,11 +1,16 @@
-import Fastify from "fastify";
+import Fastify, { type FastifyBaseLogger } from "fastify";
 import cookie from "@fastify/cookie";
 import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
+import { HeadBucketCommand } from "@aws-sdk/client-s3";
 import { ZodError } from "zod";
+import { createLogger } from "@map/shared/logging";
+import { buildReadinessReport, runProbes } from "@map/shared/health";
 import { config } from "./config";
 import { AppError } from "./errors";
 import { query } from "./db";
+import { getMediaRedis } from "./queue";
+import { getInternalS3 } from "./storage";
 import { authRoutes } from "./routes/auth";
 import { featureRoutes } from "./routes/features";
 import { mediaRoutes } from "./routes/media";
@@ -13,12 +18,11 @@ import { commentRoutes } from "./routes/comments";
 import { reportRoutes } from "./routes/reports";
 import { moderationRoutes } from "./routes/moderation";
 
+export const logger = createLogger({ app: "api" });
+
 export async function buildApp() {
   const app = Fastify({
-    logger: {
-      level: config.NODE_ENV === "production" ? "info" : "debug",
-      redact: ["req.headers.authorization", "req.headers.cookie", "res.headers.set-cookie"]
-    },
+    logger: logger as unknown as FastifyBaseLogger,
     trustProxy: true,
     bodyLimit: 1024 * 1024
   });
@@ -42,14 +46,33 @@ export async function buildApp() {
     reply.header("Permissions-Policy", "geolocation=(self)");
   });
 
+  // Liveness: the process event loop is up. Never touches dependencies so a
+  // database outage never forces an orchestrator restart loop.
   app.get("/health/live", async () => ({ status: "ok" }));
-  app.get("/health/ready", async (_request, reply) => {
-    try {
-      await query("SELECT 1");
-      return { status: "ready" };
-    } catch {
-      return reply.code(503).send({ status: "not_ready" });
-    }
+
+  // Readiness: every runtime dependency must answer within the configured
+  // timeout. Returns 503 with the failing check until the service recovers.
+  app.get("/health/ready", { logLevel: "debug" }, async (_request, reply) => {
+    const checks = await runProbes([
+      { name: "postgres", check: async () => void (await query("SELECT 1")) },
+      {
+        name: "redis",
+        check: async () => {
+          const redisReply = await getMediaRedis().ping();
+          if (redisReply !== "PONG") throw new Error(`unexpected reply: ${String(redisReply)}`);
+        }
+      },
+      {
+        name: `s3:${config.S3_QUARANTINE_BUCKET}`,
+        check: async () => void (await getInternalS3().send(new HeadBucketCommand({ Bucket: config.S3_QUARANTINE_BUCKET })))
+      },
+      {
+        name: `s3:${config.S3_PUBLIC_BUCKET}`,
+        check: async () => void (await getInternalS3().send(new HeadBucketCommand({ Bucket: config.S3_PUBLIC_BUCKET })))
+      }
+    ], config.HEALTH_CHECK_TIMEOUT_MS);
+    const report = buildReadinessReport("api", checks);
+    return reply.code(report.status === "ready" ? 200 : 503).send(report);
   });
 
   await app.register(async (api) => {

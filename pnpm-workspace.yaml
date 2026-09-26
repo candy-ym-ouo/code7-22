@@ -3,6 +3,7 @@ packages:
   - packages/*
 
 allowBuilds:
+  '@embedded-postgres/linux-arm64': false
   esbuild: true
   msgpackr-extract: false
   sharp: true

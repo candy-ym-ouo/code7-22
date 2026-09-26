@@ -1,13 +1,15 @@
-import dotenv from "dotenv";
-import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
-
-dotenv.config({ path: process.env.ENV_FILE || join(dirname(fileURLToPath(import.meta.url)), "../../../.env") });
 import { z } from "zod";
+import { loadConfig, loadEnvFile, resolveNodeEnv } from "@map/shared/env";
 
-const envSchema = z.object({
-  NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
+loadEnvFile();
+
+const nodeEnv = resolveNodeEnv();
+
+const schema = z.object({
+  NODE_ENV: z.enum(["development", "test", "production"]).default(nodeEnv),
+  WORKER_PORT: z.coerce.number().int().positive().default(3100),
   DATABASE_URL: z.string().min(1),
+  DB_CONNECT_TIMEOUT_SECONDS: z.coerce.number().int().positive().default(30),
   REDIS_URL: z.string().min(1).default("redis://localhost:6379/0"),
   S3_ENDPOINT: z.string().url(),
   S3_PUBLIC_ENDPOINT: z.string().url(),
@@ -29,7 +31,8 @@ const envSchema = z.object({
   SMTP_SECURE: z.string().default("false").transform((value) => value === "true"),
   SMTP_USER: z.string().optional(),
   SMTP_PASSWORD: z.string().optional(),
-  MAIL_FROM: z.string().default("公共空间细节地图 <noreply@example.test>")
+  MAIL_FROM: z.string().default("公共空间细节地图 <noreply@example.test>"),
+  HEALTH_CHECK_TIMEOUT_MS: z.coerce.number().int().positive().default(2_000)
 });
 
-export const config = envSchema.parse(process.env);
+export const config = loadConfig(schema, process.env);

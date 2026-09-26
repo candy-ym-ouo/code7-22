@@ -1,12 +1,15 @@
 import type { PrivacyRegion } from "@map/shared/contracts";
+import { createLogger } from "@map/shared/logging";
 import { config } from "./config";
-import { pool } from "./db";
+import { getPool } from "./db";
 import { deleteObject, objectExists, readQuarantineObject, writeQuarantineObject, copyToPublic } from "./storage";
 import { scanForMalware } from "./clamav";
 import { processPrivacyImage } from "./privacy";
 
+const logger = createLogger({ app: "worker" });
+
 export async function processMediaJob(mediaId: string): Promise<void> {
-  const result = await pool.query<{
+  const result = await getPool().query<{
     id: string;
     privacy_status: string;
     quarantine_object_key: string;
@@ -19,7 +22,7 @@ export async function processMediaJob(mediaId: string): Promise<void> {
   const media = result.rows[0];
   if (!media) throw new Error("Media record not found");
   if (!["processing", "failed"].includes(media.privacy_status)) {
-    console.log(`skip media ${mediaId}: status=${media.privacy_status}`);
+    logger.debug({ mediaId, status: media.privacy_status }, "skip media: unexpected status");
     return;
   }
 
@@ -28,11 +31,11 @@ export async function processMediaJob(mediaId: string): Promise<void> {
   const publicThumbnailKey = `media/${mediaId}.thumb.webp`;
 
   try {
-    await pool.query("UPDATE media_assets SET privacy_status = 'scanning', updated_at = now() WHERE id = $1", [mediaId]);
+    await getPool().query("UPDATE media_assets SET privacy_status = 'scanning', updated_at = now() WHERE id = $1", [mediaId]);
     const source = await readQuarantineObject(media.quarantine_object_key);
     await scanForMalware(source);
 
-    await pool.query("UPDATE media_assets SET privacy_status = 'processing', updated_at = now() WHERE id = $1", [mediaId]);
+    await getPool().query("UPDATE media_assets SET privacy_status = 'processing', updated_at = now() WHERE id = $1", [mediaId]);
     const manualRegions = media.privacy_report?.manualRegions ?? [];
     const processed = await processPrivacyImage(source, manualRegions);
 
@@ -59,7 +62,7 @@ export async function processMediaJob(mediaId: string): Promise<void> {
       completedAt: new Date().toISOString()
     };
 
-    await pool.query(
+    await getPool().query(
       `UPDATE media_assets
        SET privacy_status = $2,
            processed_object_key = $3,
@@ -92,10 +95,10 @@ export async function processMediaJob(mediaId: string): Promise<void> {
       ]
     );
 
-    console.log(`media ${mediaId} processed as ${autoPublish ? "ready" : "manual_review"}`);
+    logger.info({ mediaId, privacyStatus: autoPublish ? "ready" : "manual_review" }, "media processed");
   } catch (error) {
     const message = error instanceof Error ? error.message.slice(0, 500) : "Unknown media processing error";
-    await pool.query(
+    await getPool().query(
       `UPDATE media_assets
        SET privacy_status = 'failed', failure_code = $2,
            delete_after = now() + interval '7 days', updated_at = now()
@@ -113,7 +116,7 @@ export async function processMediaJob(mediaId: string): Promise<void> {
 }
 
 export async function cleanupOriginalMedia(): Promise<void> {
-  const abandoned = await pool.query<{ id: string; quarantine_object_key: string }>(
+  const abandoned = await getPool().query<{ id: string; quarantine_object_key: string }>(
     `SELECT id, quarantine_object_key FROM media_assets
      WHERE privacy_status = 'quarantined'
        AND created_at < now() - interval '24 hours'
@@ -125,18 +128,18 @@ export async function cleanupOriginalMedia(): Promise<void> {
       if (await objectExists(config.S3_QUARANTINE_BUCKET, row.quarantine_object_key)) {
         await deleteObject(config.S3_QUARANTINE_BUCKET, row.quarantine_object_key);
       }
-      await pool.query(
+      await getPool().query(
         `UPDATE media_assets
          SET privacy_status = 'deleted', deleted_at = now(), updated_at = now()
          WHERE id = $1`,
         [row.id]
       );
     } catch (error) {
-      console.error({ mediaId: row.id, error }, "failed to clean abandoned upload");
+      logger.error({ mediaId: row.id, err: error }, "failed to clean abandoned upload");
     }
   }
 
-  const result = await pool.query<{ id: string; quarantine_object_key: string }>(
+  const result = await getPool().query<{ id: string; quarantine_object_key: string }>(
     `SELECT id, quarantine_object_key FROM media_assets
      WHERE delete_after IS NOT NULL AND delete_after <= now()
        AND quarantine_object_key IS NOT NULL
@@ -148,15 +151,15 @@ export async function cleanupOriginalMedia(): Promise<void> {
       if (await objectExists(config.S3_QUARANTINE_BUCKET, row.quarantine_object_key)) {
         await deleteObject(config.S3_QUARANTINE_BUCKET, row.quarantine_object_key);
       }
-      await pool.query("UPDATE media_assets SET delete_after = NULL, updated_at = now() WHERE id = $1", [row.id]);
+      await getPool().query("UPDATE media_assets SET delete_after = NULL, updated_at = now() WHERE id = $1", [row.id]);
     } catch (error) {
-      console.error({ mediaId: row.id, error }, "failed to clean original media");
+      logger.error({ mediaId: row.id, err: error }, "failed to clean original media");
     }
   }
 }
 
 export async function markStaleFeatures(): Promise<void> {
-  await pool.query(
+  await getPool().query(
     `UPDATE map_features
      SET needs_review_at = COALESCE(needs_review_at, now()), updated_at = now()
      WHERE status = 'published' AND freshness_expires_at <= now() AND needs_review_at IS NULL`
@@ -164,7 +167,7 @@ export async function markStaleFeatures(): Promise<void> {
 }
 
 export async function recoverStuckMedia(): Promise<string[]> {
-  const result = await pool.query<{ id: string }>(
+  const result = await getPool().query<{ id: string }>(
     `UPDATE media_assets
      SET privacy_status = 'processing', failure_code = 'Recovered after worker timeout', updated_at = now()
      WHERE privacy_status IN ('scanning', 'processing')
@@ -176,7 +179,7 @@ export async function recoverStuckMedia(): Promise<string[]> {
 }
 
 export async function cleanupDeletedMediaObjects(): Promise<void> {
-  const result = await pool.query<{
+  const result = await getPool().query<{
     id: string;
     quarantine_object_key: string;
     processed_object_key: string | null;
@@ -208,7 +211,7 @@ export async function cleanupDeletedMediaObjects(): Promise<void> {
       if (item.public_thumbnail_object_key) removals.push(deleteObject(config.S3_PUBLIC_BUCKET, item.public_thumbnail_object_key));
       await Promise.all(removals);
 
-      await pool.query(
+      await getPool().query(
         `UPDATE media_assets
          SET quarantine_object_key = $2,
              processed_object_key = NULL,
@@ -221,13 +224,13 @@ export async function cleanupDeletedMediaObjects(): Promise<void> {
         [item.id, `deleted/${item.id}.object`]
       );
     } catch (error) {
-      console.error({ mediaId: item.id, error }, "failed to clean deleted media objects");
+      logger.error({ mediaId: item.id, err: error }, "failed to clean deleted media objects");
     }
   }
 }
 
 export async function markUnreferencedMediaDeleted(): Promise<void> {
-  await pool.query(
+  await getPool().query(
     `UPDATE media_assets ma
      SET privacy_status = 'deleted', deleted_at = now(), updated_at = now()
      WHERE ma.deleted_at IS NULL

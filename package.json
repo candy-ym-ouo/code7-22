@@ -8,12 +8,15 @@
   },
   "scripts": {
     "dev": "concurrently -n api,worker,web -c blue,magenta,green \"pnpm --filter @map/api dev\" \"pnpm --filter @map/worker dev\" \"pnpm --filter @map/web dev\"",
-    "build": "pnpm -r build",
+    "build": "pnpm -r run --if-present build",
     "typecheck": "pnpm -r typecheck",
     "lint": "pnpm -r typecheck",
     "test": "pnpm -r test",
+    "test:e2e": "pnpm --filter @map/db test:e2e",
     "verify": "pnpm lint && pnpm test && pnpm build",
     "db:migrate": "pnpm --filter @map/db migrate",
+    "db:rollback": "pnpm --filter @map/db rollback",
+    "db:status": "pnpm --filter @map/db status",
     "db:seed": "pnpm --filter @map/db seed",
     "admin:create": "pnpm --filter @map/db admin:create"
   },

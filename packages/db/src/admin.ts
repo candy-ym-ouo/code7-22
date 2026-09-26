@@ -1,14 +1,9 @@
-import dotenv from "dotenv";
-import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
-
-dotenv.config({ path: process.env.ENV_FILE || join(dirname(fileURLToPath(import.meta.url)), "../../../.env") });
+import "@map/shared/bootstrap";
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
-import pg from "pg";
+import { Client } from "pg";
 import { hashPassword, normalizeEmail } from "@map/shared/server";
-
-const { Client } = pg;
+import { dbConfig } from "./config";
 
 function argument(name: string): string | undefined {
   const index = process.argv.indexOf(name);
@@ -49,9 +44,6 @@ async function promptHidden(question: string): Promise<string> {
 }
 
 async function main() {
-  const databaseUrl = process.env.DATABASE_URL;
-  if (!databaseUrl) throw new Error("DATABASE_URL is required");
-
   const rl = createInterface({ input, output });
   const email = argument("--email") ?? await rl.question("Admin email: ");
   const displayName = argument("--name") ?? await rl.question("Display name: ");
@@ -62,7 +54,7 @@ async function main() {
   const normalized = normalizeEmail(email);
   const passwordHash = await hashPassword(password);
 
-  const client = new Client({ connectionString: databaseUrl });
+  const client = new Client({ connectionString: dbConfig.DATABASE_URL });
   await client.connect();
   try {
     await client.query(

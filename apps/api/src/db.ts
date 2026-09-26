@@ -1,24 +1,35 @@
 import pg from "pg";
 import type { PoolClient, QueryResultRow } from "pg";
 import { config } from "./config";
+import { createLogger } from "@map/shared/logging";
 
 const { Pool } = pg;
 
-export const pool = new Pool({
-  connectionString: config.DATABASE_URL,
-  max: 20,
-  idleTimeoutMillis: 30_000
-});
+const logger = createLogger({ app: "api" });
 
-pool.on("error", (error) => {
-  console.error({ error }, "unexpected PostgreSQL pool error");
-});
+let poolInstance: pg.Pool | undefined;
+
+/** Lazily create the connection pool after startup checks pass. */
+export function getPool(): pg.Pool {
+  if (!poolInstance) {
+    poolInstance = new Pool({
+      connectionString: config.DATABASE_URL,
+      max: 20,
+      idleTimeoutMillis: 30_000
+    });
+    poolInstance.on("error", (error) => {
+      logger.error({ err: error }, "unexpected PostgreSQL pool error");
+    });
+  }
+  return poolInstance;
+}
 
 export async function query<T extends QueryResultRow = QueryResultRow>(text: string, values: unknown[] = []) {
-  return pool.query<T>(text, values);
+  return getPool().query<T>(text, values);
 }
 
 export async function transaction<T>(callback: (client: PoolClient) => Promise<T>): Promise<T> {
+  const pool = getPool();
   const client = await pool.connect();
   try {
     await client.query("BEGIN");

@@ -1,0 +1,180 @@
+# Reference deployment for the public-space detail map.
+# Every Node service uses the same image but a different command, and every
+# long-lived service ships a healthcheck wired to /health/* readiness.
+#
+# Secrets (JWT_ACCESS_SECRET, S3 keys, SMTP credentials) MUST be provided via
+# an .env file or your orchestrator's secret store; the values below are local
+# development defaults only.
+services:
+  postgres:
+    image: postgis/postgis:17-3.4
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-map}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-map}
+      POSTGRES_DB: ${POSTGRES_DB:-map}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-map} -d ${POSTGRES_DB:-map}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  minio:
+    image: minio/minio:RELEASE.2024-12-18T13-15-44Z
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-map}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-mapmapmap}
+    volumes:
+      - miniodata:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  minio-init:
+    image: minio/mc:RELEASE.2024-11-21T17-21-54Z
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-map}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-mapmapmap}
+      MINIO_QUARANTINE_BUCKET: ${S3_QUARANTINE_BUCKET:-map-quarantine}
+      MINIO_PUBLIC_BUCKET: ${S3_PUBLIC_BUCKET:-map-public}
+    volumes:
+      - ./infra/minio:/init:ro
+    entrypoint: ["sh", "/init/create-buckets.sh"]
+
+  # One-shot migration job; api/worker wait until it succeeds.
+  migrate:
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.node
+    command: ["pnpm", "--filter", "@map/db", "migrate"]
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-map}:${POSTGRES_PASSWORD:-map}@postgres:5432/${POSTGRES_DB:-map}
+      DB_CONNECT_TIMEOUT_SECONDS: "60"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.node
+    command: ["pnpm", "--filter", "@map/api", "start"]
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      PORT: "3000"
+      DATABASE_URL: postgres://${POSTGRES_USER:-map}:${POSTGRES_PASSWORD:-map}@postgres:5432/${POSTGRES_DB:-map}
+      REDIS_URL: redis://redis:6379/0
+      S3_ENDPOINT: http://minio:9000
+      S3_PUBLIC_ENDPOINT: http://minio:9000
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_ACCESS_KEY: ${MINIO_ROOT_USER:-map}
+      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-mapmapmap}
+      S3_QUARANTINE_BUCKET: ${S3_QUARANTINE_BUCKET:-map-quarantine}
+      S3_PUBLIC_BUCKET: ${S3_PUBLIC_BUCKET:-map-public}
+      PUBLIC_MEDIA_BASE_URL: ${PUBLIC_MEDIA_BASE_URL:-http://localhost:9000/map-public}
+      APP_ORIGIN: ${APP_ORIGIN:-http://localhost:8080}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?set a strong JWT_ACCESS_SECRET (>=32 chars)}
+      APP_VERSION: ${APP_VERSION:-local}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      DB_CONNECT_TIMEOUT_SECONDS: "60"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      minio-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3000/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  worker:
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.node
+    command: ["pnpm", "--filter", "@map/worker", "start"]
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      WORKER_PORT: "3100"
+      DATABASE_URL: postgres://${POSTGRES_USER:-map}:${POSTGRES_PASSWORD:-map}@postgres:5432/${POSTGRES_DB:-map}
+      REDIS_URL: redis://redis:6379/0
+      S3_ENDPOINT: http://minio:9000
+      S3_PUBLIC_ENDPOINT: http://minio:9000
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_ACCESS_KEY: ${MINIO_ROOT_USER:-map}
+      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-mapmapmap}
+      S3_QUARANTINE_BUCKET: ${S3_QUARANTINE_BUCKET:-map-quarantine}
+      S3_PUBLIC_BUCKET: ${S3_PUBLIC_BUCKET:-map-public}
+      CLAMAV_ENABLED: ${CLAMAV_ENABLED:-false}
+      APP_VERSION: ${APP_VERSION:-local}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      DB_CONNECT_TIMEOUT_SECONDS: "60"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      minio-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3100/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  web:
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.web
+      args:
+        VITE_TILE_URL: ${VITE_TILE_URL:-}
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "8080:80"
+
+  caddy:
+    image: caddy:2-alpine
+    volumes:
+      - ./infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+    depends_on:
+      - api
+      - web
+    ports:
+      - "80:80"
+      - "443:443"
+
+volumes:
+  pgdata:
+  miniodata:

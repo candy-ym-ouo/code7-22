@@ -1,6 +1,6 @@
 import nodemailer from "nodemailer";
 import { config } from "./config";
-import { pool } from "./db";
+import { getPool } from "./db";
 
 const transporter = nodemailer.createTransport({
   host: config.SMTP_HOST,
@@ -16,7 +16,7 @@ type OutboxEvent = {
 };
 
 export async function recoverStuckOutbox(): Promise<void> {
-  await pool.query(
+  await getPool().query(
     `UPDATE outbox_events
      SET status = 'pending', available_at = now(), last_error = 'Recovered after worker timeout', updated_at = now()
      WHERE status = 'processing' AND updated_at < now() - interval '10 minutes'`
@@ -24,7 +24,7 @@ export async function recoverStuckOutbox(): Promise<void> {
 }
 
 export async function dispatchOutbox(eventId?: string): Promise<void> {
-  const result = await pool.query<OutboxEvent>(
+  const result = await getPool().query<OutboxEvent>(
     `WITH claimed AS (
        SELECT id FROM outbox_events
        WHERE status = 'pending'
@@ -51,7 +51,7 @@ export async function dispatchOutbox(eventId?: string): Promise<void> {
         text: event.payload.text,
         html: event.payload.html
       });
-      await pool.query(
+      await getPool().query(
         `UPDATE outbox_events
          SET status = 'processed', processed_at = now(), last_error = NULL,
              payload = '{"delivered":true}'::jsonb, updated_at = now()
@@ -61,7 +61,7 @@ export async function dispatchOutbox(eventId?: string): Promise<void> {
     } catch (error) {
       const attempts = event.attempts + 1;
       const failed = attempts >= 5;
-      await pool.query(
+      await getPool().query(
         `UPDATE outbox_events
          SET status = $2,
              attempts = $3,
